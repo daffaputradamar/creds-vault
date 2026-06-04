@@ -330,10 +330,10 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   const isDeleteDialogOpen = modalType === 'delete';
 
   return (
-    <div className="h-full bg-background text-foreground">
+    <div className="h-screen bg-background text-foreground">
       <div className="mx-auto flex h-full w-full max-w-7xl flex-col gap-4 sm:px-6 lg:px-8">
-        <div className="grid flex-1 gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
-          <Card className="flex min-h-0 max-h-screen flex-col overflow-hidden border-border/70 bg-card/90 shadow-xl shadow-black/5 backdrop-blur">
+        <div className="grid flex-1 gap-4 lg:grid-cols-[20rem_minmax(0,1fr)] items-center">
+          <Card className="flex h-[calc(100vh-2rem)] flex-col overflow-hidden border-border/70 bg-card/90 shadow-xl shadow-black/5 backdrop-blur">
             <div className="border-b border-border/70 px-4 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="space-y-2">
@@ -447,7 +447,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
             </ScrollArea>
           </Card>
 
-          <Card className="flex min-h-0 flex-col overflow-hidden border-border/70 bg-card/90 shadow-xl shadow-black/5 backdrop-blur">
+          <Card className="flex h-[calc(100vh-2rem)] flex-col overflow-auto border-border/70 bg-card/90 shadow-xl shadow-black/5 backdrop-blur">
             {selectedCred ? (
               <>
                 <div className="border-b border-border/70 px-5 py-4 sm:px-6">
