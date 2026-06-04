@@ -4,7 +4,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import {
   Card,
   CardDescription,
@@ -142,6 +142,32 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   const handleLock = async () => {
     await lockVault();
     router.refresh();
+  };
+
+  const copySshFromCred = async (c: Credential) => {
+    try {
+      if (c.type !== 'ssh') {
+        triggerToast('Not an SSH credential');
+        return;
+      }
+
+      const host = (c.host ?? '').toString().trim();
+      const user = (c.username ?? '').toString().trim();
+      const port = (c.port ?? '').toString().trim();
+
+      if (!host) {
+        triggerToast('No host available');
+        return;
+      }
+
+      const sshCmd = `ssh ${user ? `${user}@` : ''}${host}${port ? ` -p ${port}` : ''}`;
+      await navigator.clipboard.writeText(sshCmd);
+      setCopiedField(`ssh-${c.id}`);
+      triggerToast('SSH command copied!');
+      setTimeout(() => setCopiedField(null), 1500);
+    } catch {
+      triggerToast('Failed to copy SSH command');
+    }
   };
 
   // Toast Helper
@@ -369,27 +395,42 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
                               : c.host || c.service || '';
 
                           return (
-                            <Button
-                              key={c.id}
-                              variant="ghost"
-                              className={cn(
-                                'h-auto w-full justify-start gap-3 rounded-xl border border-transparent px-3 py-3 text-left hover:border-border hover:bg-muted/60',
-                                c.id === selectedId && 'border-primary/20 bg-primary/5 shadow-sm'
-                              )}
-                              onClick={() => {
-                                setSelectedId(c.id);
-                                setRevealed({});
-                              }}
-                            >
-                              <div className={cn('flex h-10 w-10 items-center justify-center rounded-xl text-base', getTypeBadgeStyle(c.type as CredentialType))}>
-                                <i className={`ti ${typeMeta.icon}`} aria-hidden="true" />
-                              </div>
+                            <>
+                              <span
+                                key={c.id}
+                                className={cn(
+                                  buttonVariants({variant: 'ghost'}),
+                                  'h-auto w-full justify-start gap-3 rounded-xl border border-transparent px-3 py-3 text-left hover:border-border hover:bg-muted/60',
+                                  c.id === selectedId && 'border-primary/20 bg-primary/5 shadow-sm'
+                                )}
+                                onClick={() => {
+                                  setSelectedId(c.id);
+                                  setRevealed({});
+                                }}
+                              >
+                                <div className={cn('flex h-10 w-10 items-center justify-center rounded-xl text-base', getTypeBadgeStyle(c.type as CredentialType))}>
+                                  <i className={`ti ${typeMeta.icon}`} aria-hidden="true" />
+                                </div>
 
-                              <div className="min-w-0 flex-1">
-                                <div className="truncate text-sm font-medium text-foreground">{c.label}</div>
-                                <div className="truncate text-xs text-muted-foreground">{subLabel || 'No extra details'}</div>
-                              </div>
-                            </Button>
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-sm font-medium text-foreground">{c.label}</div>
+                                  <div className="truncate text-xs text-muted-foreground">{subLabel || 'No extra details'}</div>
+                                </div>
+
+                                {c.type === 'ssh' && (
+                                <span
+                                  className={`h-8 w-8 shrink-0 ${buttonVariants({variant: 'ghost', size: 'icon'})}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    copySshFromCred(c);
+                                  }}
+                                  title="Copy SSH command"
+                                >
+                                  <i className={`ti ${copiedField === `ssh-${c.id}` ? 'ti-check' : 'ti-copy'}`} aria-hidden="true" />
+                                </span>
+                              )}
+                              </span>
+                            </>
                           );
                         })}
                       </div>
