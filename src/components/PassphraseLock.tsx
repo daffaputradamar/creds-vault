@@ -47,7 +47,7 @@ export default function PassphraseLock({ onUnlock }: PassphraseLockProps) {
   };
 
   return (
-    <div className="mx-auto flex min-h-svh w-full max-w-md items-center px-4 py-10 sm:px-6">
+    <div className="max-h-screen mx-auto flex min-h-svh w-full max-w-md items-center px-4 py-10 sm:px-6">
       <Card className="w-full border-border/70 bg-card/95 shadow-2xl shadow-black/5 backdrop-blur">
         <CardHeader className="space-y-4 text-center">
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-muted/60 text-foreground shadow-sm">

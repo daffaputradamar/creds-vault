@@ -304,10 +304,10 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   const isDeleteDialogOpen = modalType === 'delete';
 
   return (
-    <div className="min-h-svh bg-background text-foreground">
-      <div className="mx-auto flex min-h-svh w-full max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 lg:px-8">
+    <div className="h-full bg-background text-foreground">
+      <div className="mx-auto flex h-full w-full max-w-7xl flex-col gap-4 sm:px-6 lg:px-8">
         <div className="grid flex-1 gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
-          <Card className="flex min-h-0 flex-col overflow-hidden border-border/70 bg-card/90 shadow-xl shadow-black/5 backdrop-blur">
+          <Card className="flex min-h-0 max-h-screen flex-col overflow-hidden border-border/70 bg-card/90 shadow-xl shadow-black/5 backdrop-blur">
             <div className="border-b border-border/70 px-4 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="space-y-2">
@@ -338,6 +338,12 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
                   value={search}
                   onChange={(e) => handleSearchChange(e.target.value)}
                 />
+              </div>
+              <div className="mt-3">
+                <Button className="w-full gap-2" onClick={openAddModal}>
+                  <i className="ti ti-plus" aria-hidden="true" />
+                  Add credential
+                </Button>
               </div>
             </div>
 
@@ -398,13 +404,6 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
                 )}
               </div>
             </ScrollArea>
-
-            <div className="border-t border-border/70 p-3">
-              <Button className="w-full gap-2" onClick={openAddModal}>
-                <i className="ti ti-plus" aria-hidden="true" />
-                Add credential
-              </Button>
-            </div>
           </Card>
 
           <Card className="flex min-h-0 flex-col overflow-hidden border-border/70 bg-card/90 shadow-xl shadow-black/5 backdrop-blur">

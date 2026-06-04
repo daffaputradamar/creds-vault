@@ -9,19 +9,11 @@ export default async function Home() {
   const authorized = await isAuthorized();
 
   if (!authorized) {
-    return (
-      <div className="min-h-svh">
-        <PassphraseLockWrapper />
-      </div>
-    );
+    return  <PassphraseLockWrapper />
   }
 
   // Retrieve initial credentials list from DB
   const initialCredentials = await getCredentials();
 
-  return (
-    <div className="min-h-svh">
-      <VaultClient initialCredentials={initialCredentials} />
-    </div>
-  );
+  return <VaultClient initialCredentials={initialCredentials} />
 }
