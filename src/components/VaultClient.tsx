@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useState, useTransition, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -179,21 +179,30 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   };
 
   // Search Logic
-  const handleSearchChange = async (val: string) => {
+  const DEBOUNCE_MS = 500;
+
+  const handleSearchChange = (val: string) => {
     setSearch(val);
-    startTransition(async () => {
-      const results = await getCredentials(val);
-      setCreds(results);
-      if (results.length > 0) {
-        // Only reset selected if current selected is not in search results
-        if (!results.some(c => c.id === selectedId)) {
-          setSelectedId(results[0].id);
-        }
-      } else {
-        setSelectedId(null);
-      }
-    });
   };
+
+  useEffect(() => {
+    const id = setTimeout(() => {
+      startTransition(async () => {
+        const results = await getCredentials(search);
+        setCreds(results);
+        if (results.length > 0) {
+          // Only reset selected if current selected is not in search results
+          if (!results.some(c => c.id === selectedId)) {
+            setSelectedId(results[0].id);
+          }
+        } else {
+          setSelectedId(null);
+        }
+      });
+    }, DEBOUNCE_MS);
+
+    return () => clearTimeout(id);
+  }, [search, startTransition, selectedId]);
 
   // Copy to Clipboard
   const handleCopy = async (val: string, label: string, fieldKey: string) => {
