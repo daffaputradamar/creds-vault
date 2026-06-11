@@ -40,6 +40,7 @@ import {
 } from '@/app/actions';
 import type { Credential } from '@/db/schema';
 import { ModeToggle } from './mode-toggle';
+import KeyGenerator from './key-generator';
 
 export const TYPES = {
   ssh:      { label: 'SSH',              icon: 'ti-terminal-2',    fields: ['host','port','username','privateKey','passphrase'] },
@@ -362,6 +363,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
                 <Button variant="outline" size="icon" onClick={handleLock} title="Lock vault">
                   <i className="ti ti-lock-off" aria-hidden="true" />
                 </Button>
+                <KeyGenerator />
                 <ModeToggle/>
                 
               </div>
