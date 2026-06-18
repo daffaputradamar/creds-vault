@@ -4,7 +4,7 @@ import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 import { db } from '@/db/drizzle';
 import { credentials, type Credential } from '@/db/schema';
-import { eq, or, ilike } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
 /**
  * Check if the current session is authorized using the vault passphrase.
@@ -44,33 +44,15 @@ export async function lockVault(): Promise<{ success: boolean }> {
 }
 
 /**
- * Get credentials, filtering by an optional search query.
+ * Get all credentials.
  */
-export async function getCredentials(search?: string): Promise<Credential[]> {
+export async function getCredentials(): Promise<Credential[]> {
   const authorized = await isAuthorized();
   if (!authorized) {
     throw new Error('Unauthorized access to vault');
   }
 
   try {
-    if (search && search.trim() !== '') {
-      const query = `%${search.trim()}%`;
-      return await db
-        .select()
-        .from(credentials)
-        .where(
-          or(
-            ilike(credentials.label, query),
-            ilike(credentials.notes, query),
-            ilike(credentials.host, query),
-            ilike(credentials.username, query),
-            ilike(credentials.service, query),
-            ilike(credentials.url, query)
-          )
-        )
-        .orderBy(credentials.label);
-    }
-
     return await db.select().from(credentials).orderBy(credentials.label);
   } catch (error) {
     console.error('Failed to fetch credentials:', error);

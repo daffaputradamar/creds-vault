@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -32,7 +32,6 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
 import { 
-  getCredentials, 
   createCredential, 
   updateCredential, 
   deleteCredential, 
@@ -116,7 +115,6 @@ interface VaultClientProps {
 
 export default function VaultClient({ initialCredentials }: VaultClientProps) {
   const router = useRouter();
-  const [, startTransition] = useTransition();
   const [creds, setCreds] = useState<Credential[]>(initialCredentials);
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<number | null>(
@@ -179,31 +177,22 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     }, 2000);
   };
 
-  // Search Logic
-  const DEBOUNCE_MS = 500;
-
   const handleSearchChange = (val: string) => {
     setSearch(val);
   };
 
-  useEffect(() => {
-    const id = setTimeout(() => {
-      startTransition(async () => {
-        const results = await getCredentials(search);
-        setCreds(results);
-        if (results.length > 0) {
-          // Only reset selected if current selected is not in search results
-          if (!results.some(c => c.id === selectedId)) {
-            setSelectedId(results[0].id);
-          }
-        } else {
-          setSelectedId(null);
-        }
-      });
-    }, DEBOUNCE_MS);
-
-    return () => clearTimeout(id);
-  }, [search, startTransition, selectedId]);
+  const filteredCreds = useMemo(() => {
+    if (!search.trim()) return creds;
+    const q = search.trim().toLowerCase();
+    return creds.filter(c =>
+      c.label.toLowerCase().includes(q) ||
+      (c.notes || '').toLowerCase().includes(q) ||
+      (c.host || '').toLowerCase().includes(q) ||
+      (c.username || '').toLowerCase().includes(q) ||
+      (c.service || '').toLowerCase().includes(q) ||
+      (c.url || '').toLowerCase().includes(q)
+    );
+  }, [search, creds]);
 
   // Copy to Clipboard
   const handleCopy = async (val: string, label: string, fieldKey: string) => {
@@ -327,11 +316,11 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   };
 
   // Retrieve current credential details
-  const selectedCred = creds.find(x => x.id === selectedId);
+  const selectedCred = filteredCreds.find(x => x.id === selectedId);
 
   // Group credentials by type for the sidebar
   const groupedCreds: Record<string, Credential[]> = {};
-  creds.forEach((c) => {
+  filteredCreds.forEach((c) => {
     if (!groupedCreds[c.type]) groupedCreds[c.type] = [];
     groupedCreds[c.type].push(c);
   });
@@ -449,7 +438,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
                   );
                 })}
 
-                {creds.length === 0 && (
+                {filteredCreds.length === 0 && (
                   <div className="rounded-xl border border-dashed border-border/70 bg-muted/30 px-4 py-10 text-center text-sm text-muted-foreground">
                     No results found
                   </div>
