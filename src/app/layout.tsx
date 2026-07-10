@@ -1,8 +1,9 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Outfit, Fira_Code, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from '@/components/theme-provider';
+import { ServiceWorkerRegister } from '@/components/sw-register';
 
 const outfit = Outfit({
   subsets: ['latin'],
@@ -13,8 +14,25 @@ const outfit = Outfit({
 const jetbrainsMono = JetBrains_Mono({subsets:['latin'],variable:'--font-mono'});
 
 export const metadata: Metadata = {
+  applicationName: 'Credentials Vault',
   title: 'Credentials Vault - Secure Storage',
   description: 'Store SSH keys, GitHub PATs, username/password pairs, API keys, and database credentials securely.',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'Vault',
+  },
+  formatDetection: { telephone: false },
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#fbfbf6' },
+    { media: '(prefers-color-scheme: dark)', color: '#0a0e1a' },
+  ],
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({
@@ -39,6 +57,7 @@ export default function RootLayout({
             disableTransitionOnChange
           >
             {children}
+            <ServiceWorkerRegister />
           </ThemeProvider>
       </body>
     </html>

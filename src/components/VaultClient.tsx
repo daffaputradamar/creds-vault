@@ -90,6 +90,29 @@ function getTypeBadgeStyle(type: CredentialType) {
   return TYPE_BADGE_STYLES[type];
 }
 
+// The "headline" secret for each type — used by the quick-copy shortcut (c).
+const PRIMARY_SECRET: Record<CredentialType, FieldKey> = {
+  ssh: 'privateKey',
+  pat: 'token',
+  userpass: 'password',
+  api: 'apiKey',
+  keypair: 'secretKey',
+  db: 'password',
+};
+
+const SHORTCUTS: [string, string][] = [
+  ['/', 'Focus search'],
+  ['j  ↓', 'Next credential'],
+  ['k  ↑', 'Previous credential'],
+  ['Enter', 'Jump to first result (in search)'],
+  ['n', 'New credential'],
+  ['e', 'Edit selected'],
+  ['c', 'Copy primary secret'],
+  ['r', 'Reveal / hide secrets'],
+  ['Esc', 'Clear search'],
+  ['?', 'Show this help'],
+];
+
 function formatDate(d: Date | null) {
   return d ? new Date(d).toISOString().slice(0, 10) : '—';
 }
@@ -124,20 +147,8 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   const [formFields, setFormFields] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState('');
 
-  // Focus search with "/" (unless already typing in a field).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== '/') return;
-      const el = document.activeElement;
-      const typing = el instanceof HTMLElement &&
-        (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
-      if (typing) return;
-      e.preventDefault();
-      searchRef.current?.focus();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  // Keyboard shortcuts
+  const [showHelp, setShowHelp] = useState(false);
 
   const handleLock = async () => {
     await lockVault();
@@ -292,6 +303,99 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   const isFormDialogOpen = modalType === 'add' || modalType === 'edit';
   const isDeleteDialogOpen = modalType === 'delete';
 
+  // Flat, visually-ordered list (type order, then within-group order) for j/k nav.
+  const orderedList = useMemo(
+    () => Object.keys(TYPES).flatMap((t) => groupedCreds[t] || []),
+    [groupedCreds]
+  );
+
+  const selectCred = (id: number) => {
+    setSelectedId(id);
+    setRevealed({});
+    document.getElementById(`cred-${id}`)?.scrollIntoView({ block: 'nearest' });
+  };
+
+  // Global keyboard navigation. Registered after all handlers are in scope.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = document.activeElement;
+      const typing = el instanceof HTMLElement &&
+        (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+      const inSearch = el === searchRef.current;
+
+      // "/" focuses search from anywhere you're not already typing.
+      if (e.key === '/' && !typing) {
+        e.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+
+      // Search-field keys.
+      if (inSearch) {
+        if (e.key === 'Escape') {
+          setSearch('');
+          searchRef.current?.blur();
+        } else if (e.key === 'Enter' && orderedList[0]) {
+          selectCred(orderedList[0].id);
+          searchRef.current?.blur();
+        }
+        return;
+      }
+
+      // Everything below is for when no field / dialog owns the keyboard.
+      if (typing || modalType || showHelp) return;
+
+      switch (e.key) {
+        case 'j':
+        case 'ArrowDown': {
+          e.preventDefault();
+          const i = orderedList.findIndex((c) => c.id === selectedId);
+          const next = orderedList[Math.min(orderedList.length - 1, (i < 0 ? -1 : i) + 1)];
+          if (next) selectCred(next.id);
+          break;
+        }
+        case 'k':
+        case 'ArrowUp': {
+          e.preventDefault();
+          const i = orderedList.findIndex((c) => c.id === selectedId);
+          const prev = orderedList[Math.max(0, (i < 0 ? 0 : i) - 1)];
+          if (prev) selectCred(prev.id);
+          break;
+        }
+        case 'n':
+          openAddModal();
+          break;
+        case 'e':
+          if (selectedCred) openEditModal(selectedCred);
+          break;
+        case 'c': {
+          if (!selectedCred) break;
+          const pf = PRIMARY_SECRET[selectedCred.type as CredentialType];
+          const val = (selectedCred[pf as CredentialField] ?? '') as string;
+          if (val) handleCopy(val, FIELD_META[pf].label, pf);
+          else triggerToast('No secret to copy');
+          break;
+        }
+        case 'r': {
+          if (!selectedCred) break;
+          const secretFields = TYPES[selectedCred.type as CredentialType].fields
+            .filter((f) => FIELD_META[f as FieldKey].secret);
+          const anyRevealed = secretFields.some((f) => revealed[f]);
+          const next: Record<string, boolean> = {};
+          secretFields.forEach((f) => { next[f] = !anyRevealed; });
+          setRevealed(next);
+          break;
+        }
+        case '?':
+          setShowHelp(true);
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [orderedList, selectedId, selectedCred, modalType, showHelp, revealed]);
+
   const setField = (f: string, val: string) =>
     setFormFields((prev) => ({ ...prev, [f]: val }));
 
@@ -322,7 +426,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     });
 
   return (
-    <div className="flex h-screen flex-col bg-background font-mono text-foreground">
+    <div className="flex h-dvh flex-col bg-background font-mono text-foreground">
       {/* ── Top command bar ─────────────────────────────────────────── */}
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3 sm:gap-3 sm:px-4">
         <div className="flex items-center gap-2.5">
@@ -358,6 +462,15 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
             <span className="hidden sm:inline">New</span>
           </Button>
           <KeyGenerator />
+          <Button
+            variant="outline"
+            size="icon"
+            className="hidden sm:inline-flex"
+            onClick={() => setShowHelp(true)}
+            title="Keyboard shortcuts (?)"
+          >
+            <i className="ti ti-keyboard" aria-hidden="true" />
+          </Button>
           <Button variant="outline" size="icon" onClick={handleLock} title="Lock vault">
             <i className="ti ti-lock" aria-hidden="true" />
           </Button>
@@ -395,8 +508,9 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
                         return (
                           <button
                             key={c.id}
+                            id={`cred-${c.id}`}
                             type="button"
-                            onClick={() => { setSelectedId(c.id); setRevealed({}); }}
+                            onClick={() => selectCred(c.id)}
                             className={cn(
                               'group flex w-full items-center gap-2.5 border-l-2 border-transparent px-2 py-2 text-left transition-colors hover:bg-muted',
                               active && 'border-primary bg-muted'
@@ -580,6 +694,29 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
         <i className="ti ti-check text-primary" aria-hidden="true" />
         <span>{toast.msg}</span>
       </div>
+
+      {/* Keyboard shortcuts help */}
+      <Dialog open={showHelp} onOpenChange={setShowHelp}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 font-mono">
+              <i className="ti ti-keyboard text-primary" aria-hidden="true" />
+              keyboard
+            </DialogTitle>
+            <DialogDescription>Navigate the vault without leaving the keyboard.</DialogDescription>
+          </DialogHeader>
+          <div className="divide-y divide-border border border-border">
+            {SHORTCUTS.map(([keys, desc]) => (
+              <div key={desc} className="flex items-center justify-between gap-4 px-3 py-2">
+                <span className="text-sm text-muted-foreground">{desc}</span>
+                <kbd className="shrink-0 border border-border px-1.5 py-0.5 text-[11px] tabular-nums text-foreground">
+                  {keys}
+                </kbd>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Delete confirm */}
       <AlertDialog open={isDeleteDialogOpen} onOpenChange={(open) => !open && setModalType(null)}>
