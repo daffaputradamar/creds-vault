@@ -1,14 +1,9 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
-import { Button, buttonVariants } from '@/components/ui/button';
-import {
-  Card,
-  CardDescription,
-} from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
   AlertDialog,
@@ -29,17 +24,17 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
-import { 
-  createCredential, 
-  updateCredential, 
-  deleteCredential, 
-  lockVault 
+import {
+  createCredential,
+  updateCredential,
+  deleteCredential,
+  lockVault,
 } from '@/app/actions';
 import type { Credential } from '@/db/schema';
 import { ModeToggle } from './mode-toggle';
 import KeyGenerator from './key-generator';
+import { SecretInput } from './secret-input';
 
 export const TYPES = {
   ssh:      { label: 'SSH',              icon: 'ti-terminal-2',    fields: ['host','port','username','privateKey','passphrase'] },
@@ -76,37 +71,27 @@ type FieldKey = keyof typeof FIELD_META;
 type CredentialField = Exclude<keyof Credential, 'id' | 'createdAt' | 'type' | 'label' | 'notes'>;
 
 const TYPE_BADGE_STYLES: Record<CredentialType, string> = {
-  ssh: 'bg-emerald-100 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:ring-emerald-900',
-  pat: 'bg-sky-100 text-sky-700 ring-1 ring-inset ring-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:ring-sky-900',
-  userpass: 'bg-amber-100 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-900',
-  api: 'bg-violet-100 text-violet-700 ring-1 ring-inset ring-violet-200 dark:bg-violet-950 dark:text-violet-300 dark:ring-violet-900',
-  keypair: 'bg-rose-100 text-rose-700 ring-1 ring-inset ring-rose-200 dark:bg-rose-950 dark:text-rose-300 dark:ring-rose-900',
-  db: 'bg-orange-100 text-orange-700 ring-1 ring-inset ring-orange-200 dark:bg-orange-950 dark:text-orange-300 dark:ring-orange-900',
+  ssh: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+  pat: 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300',
+  userpass: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+  api: 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300',
+  keypair: 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300',
+  db: 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300',
 };
 
 const EMPTY_CREDENTIAL_FIELDS = {
-  host: null,
-  port: null,
-  username: null,
-  privateKey: null,
-  passphrase: null,
-  name: null,
-  token: null,
-  scopes: null,
-  expiry: null,
-  url: null,
-  password: null,
-  service: null,
-  apiKey: null,
-  endpoint: null,
-  database: null,
-  keyId: null,
-  secretKey: null,
-  region: null,
+  host: null, port: null, username: null, privateKey: null, passphrase: null,
+  name: null, token: null, scopes: null, expiry: null, url: null, password: null,
+  service: null, apiKey: null, endpoint: null, database: null, keyId: null,
+  secretKey: null, region: null,
 } as const satisfies Pick<Credential, CredentialField>;
 
 function getTypeBadgeStyle(type: CredentialType) {
   return TYPE_BADGE_STYLES[type];
+}
+
+function formatDate(d: Date | null) {
+  return d ? new Date(d).toISOString().slice(0, 10) : '—';
 }
 
 interface VaultClientProps {
@@ -115,6 +100,8 @@ interface VaultClientProps {
 
 export default function VaultClient({ initialCredentials }: VaultClientProps) {
   const router = useRouter();
+  const searchRef = useRef<HTMLInputElement>(null);
+
   const [creds, setCreds] = useState<Credential[]>(initialCredentials);
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<number | null>(
@@ -126,38 +113,49 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   const [toast, setToast] = useState({ show: false, msg: '' });
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
-  // Modal State
+  // Modal state
   const [modalType, setModalType] = useState<'add' | 'edit' | 'delete' | null>(null);
   const [addStep, setAddStep] = useState(1);
   const [addType, setAddType] = useState<CredentialType>('ssh');
 
-  // Form State
+  // Form state
   const [formLabel, setFormLabel] = useState('');
   const [formNotes, setFormNotes] = useState('');
   const [formFields, setFormFields] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState('');
 
-  // Lock Vault
+  // Focus search with "/" (unless already typing in a field).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== '/') return;
+      const el = document.activeElement;
+      const typing = el instanceof HTMLElement &&
+        (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+      if (typing) return;
+      e.preventDefault();
+      searchRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const handleLock = async () => {
     await lockVault();
     router.refresh();
   };
 
+  const triggerToast = (msg: string) => {
+    setToast({ show: true, msg });
+    setTimeout(() => setToast({ show: false, msg: '' }), 2000);
+  };
+
   const copySshFromCred = async (c: Credential) => {
     try {
-      if (c.type !== 'ssh') {
-        triggerToast('Not an SSH credential');
-        return;
-      }
-
+      if (c.type !== 'ssh') return triggerToast('Not an SSH credential');
       const host = (c.host ?? '').toString().trim();
       const user = (c.username ?? '').toString().trim();
       const port = (c.port ?? '').toString().trim();
-
-      if (!host) {
-        triggerToast('No host available');
-        return;
-      }
+      if (!host) return triggerToast('No host available');
 
       const sshCmd = `ssh ${user ? `${user}@` : ''}${host}${port ? ` -p ${port}` : ''}`;
       await navigator.clipboard.writeText(sshCmd);
@@ -167,18 +165,6 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     } catch {
       triggerToast('Failed to copy SSH command');
     }
-  };
-
-  // Toast Helper
-  const triggerToast = (msg: string) => {
-    setToast({ show: true, msg });
-    setTimeout(() => {
-      setToast({ show: false, msg: '' });
-    }, 2000);
-  };
-
-  const handleSearchChange = (val: string) => {
-    setSearch(val);
   };
 
   const filteredCreds = useMemo(() => {
@@ -194,7 +180,6 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     );
   }, [search, creds]);
 
-  // Copy to Clipboard
   const handleCopy = async (val: string, label: string, fieldKey: string) => {
     try {
       await navigator.clipboard.writeText(val);
@@ -206,7 +191,6 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     }
   };
 
-  // Open Add modal
   const openAddModal = () => {
     setModalType('add');
     setAddStep(1);
@@ -217,27 +201,23 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     setFormError('');
   };
 
-  // Open Edit modal
   const openEditModal = (c: Credential) => {
     setModalType('edit');
     setFormLabel(c.label);
     setFormNotes(c.notes || '');
-    
+
     const initialFields: Record<string, string> = {};
     const meta = TYPES[c.type as CredentialType];
     meta.fields.forEach((f) => {
       const key = f as CredentialField;
       initialFields[f] = (c[key] ?? '') as string;
     });
-    
     setFormFields(initialFields);
     setFormError('');
   };
 
-  // Delete Action
   const handleDelete = async () => {
     if (selectedId === null) return;
-    
     const res = await deleteCredential(selectedId);
     if (res.success) {
       const remaining = creds.filter(c => c.id !== selectedId);
@@ -250,30 +230,21 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     }
   };
 
-  // Save Add Form
   const saveNew = async () => {
     const meta = TYPES[addType];
     const newLabel = formLabel.trim() || formFields[meta.fields[0]] || `New ${meta.label}`;
-    
+
     const payload: Omit<Credential, 'id' | 'createdAt'> = {
       ...EMPTY_CREDENTIAL_FIELDS,
       type: addType,
       label: newLabel,
       notes: formNotes.trim(),
     };
-
-    meta.fields.forEach((f) => {
-      payload[f] = formFields[f]?.trim() || '';
-    });
+    meta.fields.forEach((f) => { payload[f] = formFields[f]?.trim() || ''; });
 
     const res = await createCredential(payload);
     if (res.success && res.id) {
-      const newCred: Credential = {
-        ...payload,
-        id: res.id,
-        createdAt: new Date(),
-      };
-      
+      const newCred: Credential = { ...payload, id: res.id, createdAt: new Date() };
       const updatedCreds = [...creds, newCred].sort((a, b) => a.label.localeCompare(b.label));
       setCreds(updatedCreds);
       setSelectedId(res.id);
@@ -285,7 +256,6 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     }
   };
 
-  // Save Edit Form
   const saveEdit = async () => {
     if (selectedId === null) return;
     const c = creds.find(x => x.id === selectedId);
@@ -298,10 +268,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
       label: newLabel,
       notes: formNotes.trim(),
     };
-
-    meta.fields.forEach((f) => {
-      payload[f] = formFields[f]?.trim() || '';
-    });
+    meta.fields.forEach((f) => { payload[f] = formFields[f]?.trim() || ''; });
 
     const res = await updateCredential(selectedId, payload);
     if (res.success) {
@@ -315,301 +282,312 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     }
   };
 
-  // Retrieve current credential details
   const selectedCred = filteredCreds.find(x => x.id === selectedId);
 
-  // Group credentials by type for the sidebar
   const groupedCreds: Record<string, Credential[]> = {};
   filteredCreds.forEach((c) => {
-    if (!groupedCreds[c.type]) groupedCreds[c.type] = [];
-    groupedCreds[c.type].push(c);
+    (groupedCreds[c.type] ||= []).push(c);
   });
 
   const isFormDialogOpen = modalType === 'add' || modalType === 'edit';
   const isDeleteDialogOpen = modalType === 'delete';
 
+  const setField = (f: string, val: string) =>
+    setFormFields((prev) => ({ ...prev, [f]: val }));
+
+  // Shared form-field renderer for add/edit dialogs.
+  const renderFormFields = (fields: readonly string[]) =>
+    fields.map((f) => {
+      const fm = FIELD_META[f as FieldKey];
+      return (
+        <div key={f} className="space-y-1.5">
+          <div className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">{fm.label}</div>
+          {fm.secret ? (
+            <SecretInput
+              value={formFields[f] || ''}
+              onChange={(val) => setField(f, val)}
+              placeholder={fm.label}
+            />
+          ) : (
+            <Input
+              type="text"
+              placeholder={fm.label}
+              value={formFields[f] || ''}
+              onChange={(e) => setField(f, e.target.value)}
+              className="font-mono text-sm"
+            />
+          )}
+        </div>
+      );
+    });
+
   return (
-    <div className="h-screen bg-background text-foreground">
-      <div className="mx-auto flex h-full w-full max-w-7xl flex-col gap-4 sm:px-6 lg:px-8">
-        <div className="grid flex-1 gap-4 lg:grid-cols-[20rem_minmax(0,1fr)] items-center">
-          <Card className="flex h-[calc(100vh-2rem)] flex-col overflow-hidden border-border/70 bg-card/90 shadow-xl shadow-black/5 backdrop-blur">
-            <div className="border-b border-border/70 px-4 py-4">
-              <div className="flex items-start justify-between gap-3">
-                <div className="space-y-2">
-                  <Badge variant="secondary" className="w-fit rounded-full px-2.5 py-1 text-[11px] uppercase tracking-[0.18em]">
-                    Secure store
-                  </Badge>
-                  <div>
-                    <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-                      <i className="ti ti-lock text-muted-foreground" aria-hidden="true" />
-                      Credentials Vault
-                    </h1>
-                    <CardDescription className="mt-1 max-w-xs text-sm leading-6">
-                      Search, inspect, and manage stored secrets from a single encrypted workspace.
-                    </CardDescription>
+    <div className="flex h-screen flex-col bg-background font-mono text-foreground">
+      {/* ── Top command bar ─────────────────────────────────────────── */}
+      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3 sm:gap-3 sm:px-4">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center bg-primary text-primary-foreground">
+            <i className="ti ti-lock text-base" aria-hidden="true" />
+          </div>
+          <div className="hidden leading-tight sm:block">
+            <div className="text-sm font-semibold tracking-tight">vault</div>
+            <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+              {creds.length} {creds.length === 1 ? 'entry' : 'entries'}
+            </div>
+          </div>
+        </div>
+
+        <div className="relative ml-1 min-w-0 flex-1 sm:ml-2 sm:max-w-xs">
+          <i className="ti ti-search pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground" aria-hidden="true" />
+          <Input
+            ref={searchRef}
+            type="text"
+            placeholder="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="h-8 pl-8 pr-7 font-mono text-sm"
+          />
+          <kbd className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 border border-border px-1 text-[10px] text-muted-foreground sm:block">
+            /
+          </kbd>
+        </div>
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button size="sm" className="gap-1.5" onClick={openAddModal}>
+            <i className="ti ti-plus" aria-hidden="true" />
+            <span className="hidden sm:inline">New</span>
+          </Button>
+          <KeyGenerator />
+          <Button variant="outline" size="icon" onClick={handleLock} title="Lock vault">
+            <i className="ti ti-lock" aria-hidden="true" />
+          </Button>
+          <ModeToggle />
+        </div>
+      </header>
+
+      {/* ── Body ────────────────────────────────────────────────────── */}
+      <div className="grid min-h-0 flex-1 md:grid-cols-[17rem_1fr]">
+        {/* Sidebar list */}
+        <aside className="flex max-h-[38vh] min-h-0 flex-col border-b border-border md:max-h-none md:border-b-0 md:border-r">
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="p-2">
+              {Object.entries(TYPES).map(([typeKey, typeMeta]) => {
+                const list = groupedCreds[typeKey] || [];
+                if (list.length === 0) return null;
+
+                return (
+                  <div key={typeKey} className="mb-3">
+                    <div className="flex items-center gap-2 px-1.5 py-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                      <span className="text-primary">//</span>
+                      {typeMeta.label}
+                      <span className="ml-auto tabular-nums">{list.length}</span>
+                    </div>
+
+                    <div className="space-y-0.5">
+                      {list.map((c) => {
+                        const subLabel = c.type === 'userpass'
+                          ? c.username
+                          : c.type === 'keypair'
+                            ? c.service
+                            : c.host || c.service || '';
+                        const active = c.id === selectedId;
+
+                        return (
+                          <button
+                            key={c.id}
+                            type="button"
+                            onClick={() => { setSelectedId(c.id); setRevealed({}); }}
+                            className={cn(
+                              'group flex w-full items-center gap-2.5 border-l-2 border-transparent px-2 py-2 text-left transition-colors hover:bg-muted',
+                              active && 'border-primary bg-muted'
+                            )}
+                          >
+                            <span className={cn('flex h-7 w-7 shrink-0 items-center justify-center text-sm', getTypeBadgeStyle(c.type as CredentialType))}>
+                              <i className={`ti ${typeMeta.icon}`} aria-hidden="true" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-medium">{c.label}</span>
+                              <span className="block truncate text-[11px] text-muted-foreground">{subLabel || 'no details'}</span>
+                            </span>
+
+                            {c.type === 'ssh' && (
+                              <span
+                                role="button"
+                                tabIndex={-1}
+                                className="flex h-6 w-6 shrink-0 items-center justify-center text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                                onClick={(e) => { e.stopPropagation(); copySshFromCred(c); }}
+                                title="Copy SSH command"
+                              >
+                                <i className={`ti ${copiedField === `ssh-${c.id}` ? 'ti-check' : 'ti-copy'}`} aria-hidden="true" />
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {filteredCreds.length === 0 && (
+                <div className="mt-6 px-2 text-center text-xs text-muted-foreground">
+                  <div className="mb-1 text-primary">// empty</div>
+                  {search ? 'no matches' : 'no credentials yet'}
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+        </aside>
+
+        {/* Detail panel */}
+        <main className="min-h-0 overflow-auto">
+          {selectedCred ? (
+            <div className="flex min-h-full flex-col">
+              <div className="flex items-start justify-between gap-3 border-b border-border p-4">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center text-lg', getTypeBadgeStyle(selectedCred.type as CredentialType))}>
+                    <i className={`ti ${TYPES[selectedCred.type as CredentialType].icon}`} aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="truncate text-base font-semibold tracking-tight">{selectedCred.label}</h2>
+                      <span className="border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
+                        {TYPES[selectedCred.type as CredentialType].label}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">
+                      added {formatDate(selectedCred.createdAt)}
+                    </div>
                   </div>
                 </div>
-                <Button variant="outline" size="icon" onClick={handleLock} title="Lock vault">
-                  <i className="ti ti-lock-off" aria-hidden="true" />
-                </Button>
-                <KeyGenerator />
-                <ModeToggle/>
-                
+
+                <div className="flex shrink-0 gap-1.5">
+                  {selectedCred.type === 'ssh' && (
+                    <Button variant="outline" size="icon" onClick={() => copySshFromCred(selectedCred)} title="Copy SSH command">
+                      <i className="ti ti-terminal-2" aria-hidden="true" />
+                    </Button>
+                  )}
+                  <Button variant="outline" size="icon" onClick={() => openEditModal(selectedCred)} title="Edit">
+                    <i className="ti ti-edit" aria-hidden="true" />
+                  </Button>
+                  <Button variant="destructive" size="icon" onClick={() => setModalType('delete')} title="Delete">
+                    <i className="ti ti-trash" aria-hidden="true" />
+                  </Button>
+                </div>
               </div>
 
-              <div className="mt-4">
-                <Input
-                  type="text"
-                  placeholder="Search credentials"
-                  value={search}
-                  onChange={(e) => handleSearchChange(e.target.value)}
-                />
-              </div>
-              <div className="mt-3">
-                <Button className="w-full gap-2" onClick={openAddModal}>
-                  <i className="ti ti-plus" aria-hidden="true" />
-                  Add credential
-                </Button>
+              <div className="space-y-6 p-4">
+                {/* Fields */}
+                <section>
+                  <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+                    <span className="text-primary">#</span> credentials
+                  </div>
+                  <div className="divide-y divide-border border border-border">
+                    {TYPES[selectedCred.type as CredentialType].fields.map((f) => {
+                      const fm = FIELD_META[f as FieldKey];
+                      const key = f as CredentialField;
+                      const val = (selectedCred[key] ?? '') as string;
+                      const isRevealed = revealed[f] || false;
+                      const display = fm.secret && !isRevealed ? '•'.repeat(12) : val;
+
+                      return (
+                        <div key={f} className="grid grid-cols-[6.5rem_1fr] items-center gap-2 px-3 py-2.5 sm:grid-cols-[8rem_1fr]">
+                          <div className="text-[11px] uppercase tracking-widest text-muted-foreground">{fm.label}</div>
+                          <div className="flex min-w-0 items-center gap-1">
+                            <span className={cn('min-w-0 flex-1 truncate text-sm', fm.secret && !isRevealed && 'tracking-widest text-muted-foreground')}>
+                              {display || '—'}
+                            </span>
+                            {fm.secret && (
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={() => setRevealed((prev) => ({ ...prev, [f]: !prev[f] }))}
+                                title={isRevealed ? 'Hide' : 'Reveal'}
+                              >
+                                <i className={`ti ${isRevealed ? 'ti-eye-off' : 'ti-eye'}`} aria-hidden="true" />
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => handleCopy(val, fm.label, f)}
+                              title="Copy"
+                            >
+                              <i className={`ti ${copiedField === f ? 'ti-check' : 'ti-copy'}`} aria-hidden="true" />
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                {/* Notes */}
+                {selectedCred.notes && (
+                  <section>
+                    <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+                      <span className="text-primary">#</span> notes
+                    </div>
+                    <div className="border border-border p-3 text-sm leading-6 text-foreground">
+                      {selectedCred.notes}
+                    </div>
+                  </section>
+                )}
+
+                {/* Meta */}
+                <section>
+                  <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+                    <span className="text-primary">#</span> info
+                  </div>
+                  <div className="grid grid-cols-2 border border-border divide-x divide-border">
+                    <div className="p-3">
+                      <div className="text-[11px] uppercase tracking-widest text-muted-foreground">added</div>
+                      <div className="mt-1 text-sm">{formatDate(selectedCred.createdAt)}</div>
+                    </div>
+                    <div className="p-3">
+                      <div className="text-[11px] uppercase tracking-widest text-muted-foreground">type</div>
+                      <div className="mt-1 text-sm">{TYPES[selectedCred.type as CredentialType].label}</div>
+                    </div>
+                  </div>
+                </section>
               </div>
             </div>
-
-            <ScrollArea className="min-h-0 flex-1">
-              <div className="space-y-5 p-3">
-                {Object.entries(TYPES).map(([typeKey, typeMeta]) => {
-                  const list = groupedCreds[typeKey] || [];
-
-                  if (list.length === 0) return null;
-
-                  return (
-                    <div key={typeKey} className="space-y-2">
-                      <div className="px-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                        {typeMeta.label}
-                      </div>
-
-                      <div className="space-y-1">
-                        {list.map((c) => {
-                          const subLabel = c.type === 'userpass'
-                            ? c.username
-                            : c.type === 'keypair'
-                              ? c.service
-                              : c.host || c.service || '';
-
-                          return (
-                            <>
-                              <span
-                                key={c.id}
-                                className={cn(
-                                  buttonVariants({variant: 'ghost'}),
-                                  'h-auto w-full justify-start gap-3 rounded-xl border border-transparent px-3 py-3 text-left hover:border-border hover:bg-muted/60',
-                                  c.id === selectedId && 'border-primary/20 bg-primary/5 shadow-sm'
-                                )}
-                                onClick={() => {
-                                  setSelectedId(c.id);
-                                  setRevealed({});
-                                }}
-                              >
-                                <div className={cn('flex h-10 w-10 items-center justify-center rounded-xl text-base', getTypeBadgeStyle(c.type as CredentialType))}>
-                                  <i className={`ti ${typeMeta.icon}`} aria-hidden="true" />
-                                </div>
-
-                                <div className="min-w-0 flex-1">
-                                  <div className="truncate text-sm font-medium text-foreground">{c.label}</div>
-                                  <div className="truncate text-xs text-muted-foreground">{subLabel || 'No extra details'}</div>
-                                </div>
-
-                                {c.type === 'ssh' && (
-                                <span
-                                  className={`h-8 w-8 shrink-0 ${buttonVariants({variant: 'ghost', size: 'icon'})}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    copySshFromCred(c);
-                                  }}
-                                  title="Copy SSH command"
-                                >
-                                  <i className={`ti ${copiedField === `ssh-${c.id}` ? 'ti-check' : 'ti-copy'}`} aria-hidden="true" />
-                                </span>
-                              )}
-                              </span>
-                            </>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {filteredCreds.length === 0 && (
-                  <div className="rounded-xl border border-dashed border-border/70 bg-muted/30 px-4 py-10 text-center text-sm text-muted-foreground">
-                    No results found
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-          </Card>
-
-          <Card className="flex h-[calc(100vh-2rem)] flex-col overflow-auto border-border/70 bg-card/90 shadow-xl shadow-black/5 backdrop-blur">
-            {selectedCred ? (
-              <>
-                <div className="border-b border-border/70 px-5 py-4 sm:px-6">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <div className={cn('flex h-11 w-11 items-center justify-center rounded-xl text-lg', getTypeBadgeStyle(selectedCred.type as CredentialType))}>
-                        <i className={`ti ${TYPES[selectedCred.type as CredentialType].icon}`} aria-hidden="true" />
-                      </div>
-
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h2 className="truncate text-lg font-semibold tracking-tight sm:text-xl">{selectedCred.label}</h2>
-                          <Badge variant="secondary" className="rounded-full">
-                            {TYPES[selectedCred.type as CredentialType].label}
-                          </Badge>
-                        </div>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          Added {selectedCred.createdAt ? new Date(selectedCred.createdAt).toISOString().slice(0, 10) : '—'}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <Button variant="outline" size="icon" onClick={() => openEditModal(selectedCred)} title="Edit credential">
-                        <i className="ti ti-edit" aria-hidden="true" />
-                      </Button>
-                      <Button variant="destructive" size="icon" onClick={() => setModalType('delete')} title="Delete credential">
-                        <i className="ti ti-trash" aria-hidden="true" />
-                      </Button>
-                    </div>
-                  </div>
+          ) : (
+            <div className="flex h-full items-center justify-center p-8">
+              <div className="text-center">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center border border-border text-2xl text-muted-foreground">
+                  <i className="ti ti-lock-open" aria-hidden="true" />
                 </div>
-
-                <ScrollArea className="min-h-0 flex-1">
-                  <div className="space-y-8 p-5 sm:p-6">
-                    <section className="space-y-4">
-                      <div className="flex items-center gap-3">
-                        <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Credentials</h3>
-                        <Separator className="flex-1" />
-                      </div>
-
-                      <div className="space-y-4">
-                        {TYPES[selectedCred.type as CredentialType].fields.map((f) => {
-                          const fm = FIELD_META[f as FieldKey];
-                          const key = f as CredentialField;
-                          const val = (selectedCred[key] ?? '') as string;
-                          const isSecret = fm.secret;
-                          const isRevealed = revealed[f] || false;
-                          const display = isSecret && !isRevealed ? '••••••••••••' : val;
-                          const wrapClass = selectedCred.type === 'keypair' && (f === 'keyId' || f === 'secretKey')
-                            ? 'border-l-2 border-primary/40 pl-3'
-                            : '';
-
-                          return (
-                            <div key={f} className={cn('space-y-2', wrapClass)}>
-                              <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{fm.label}</div>
-                              <div className={cn(
-                                'flex min-h-11 items-center gap-2 rounded-xl border border-border/70 bg-muted/40 px-3 py-2.5 font-mono text-sm',
-                                isSecret && !isRevealed && 'tracking-[0.12em] text-muted-foreground'
-                              )}>
-                                <span className="min-w-0 flex-1 truncate">{display || '—'}</span>
-
-                                {isSecret && (
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 shrink-0"
-                                    onClick={() => setRevealed((prev) => ({ ...prev, [f]: !prev[f] }))}
-                                    title={isRevealed ? 'Hide' : 'Reveal'}
-                                  >
-                                    <i className={`ti ${isRevealed ? 'ti-eye-off' : 'ti-eye'}`} aria-hidden="true" />
-                                  </Button>
-                                )}
-
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 shrink-0"
-                                  onClick={() => handleCopy(val, fm.label, f)}
-                                  title="Copy"
-                                >
-                                  <i
-                                    className={`ti ${copiedField === f ? 'ti-check' : 'ti-copy'}`}
-                                    aria-hidden="true"
-                                  />
-                                </Button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </section>
-
-                    {selectedCred.notes && (
-                      <section className="space-y-4">
-                        <div className="flex items-center gap-3">
-                          <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Notes</h3>
-                          <Separator className="flex-1" />
-                        </div>
-                        <div className="rounded-xl border border-border/70 bg-muted/40 p-4 text-sm leading-6 text-foreground">
-                          {selectedCred.notes}
-                        </div>
-                      </section>
-                    )}
-
-                    <section className="space-y-4">
-                      <div className="flex items-center gap-3">
-                        <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Info</h3>
-                        <Separator className="flex-1" />
-                      </div>
-
-                      <div className="grid gap-4 sm:grid-cols-2">
-                        <div className="rounded-xl border border-border/70 bg-muted/30 p-4">
-                          <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Added</div>
-                          <div className="mt-2 text-sm font-medium text-foreground">
-                            {selectedCred.createdAt ? new Date(selectedCred.createdAt).toISOString().slice(0, 10) : '—'}
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-border/70 bg-muted/30 p-4">
-                          <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Type</div>
-                          <div className="mt-2 text-sm font-medium text-foreground">
-                            {TYPES[selectedCred.type as CredentialType].label}
-                          </div>
-                        </div>
-                      </div>
-                    </section>
-                  </div>
-                </ScrollArea>
-              </>
-            ) : (
-              <div className="flex flex-1 items-center justify-center p-8">
-                <div className="max-w-sm rounded-2xl border border-dashed border-border/70 bg-muted/30 px-6 py-10 text-center">
-                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-background text-muted-foreground shadow-sm">
-                    <i className="ti ti-lock-open text-2xl" aria-hidden="true" />
-                  </div>
-                  <h2 className="mt-4 text-lg font-semibold tracking-tight">No credential selected</h2>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                    Select a credential from the sidebar or add a new one to get started.
-                  </p>
-                </div>
+                <div className="mt-4 text-sm font-medium">nothing selected</div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  pick a credential from the list, or press
+                  <span className="mx-1 border border-border px-1">New</span>
+                  to add one.
+                </p>
               </div>
-            )}
-          </Card>
-        </div>
-
-        <div
-          className={cn(
-            'pointer-events-none fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full border border-border/70 bg-card px-4 py-2 text-sm shadow-lg shadow-black/10 transition-all duration-200',
-            toast.show ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'
+            </div>
           )}
-        >
-          <i className="ti ti-circle-check text-emerald-600" aria-hidden="true" />
-          <span>{toast.msg}</span>
-        </div>
+        </main>
       </div>
 
+      {/* Toast */}
+      <div
+        className={cn(
+          'pointer-events-none fixed bottom-4 right-4 z-50 flex items-center gap-2 border border-border bg-popover px-3 py-2 text-sm shadow-lg transition-all duration-200',
+          toast.show ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'
+        )}
+      >
+        <i className="ti ti-check text-primary" aria-hidden="true" />
+        <span>{toast.msg}</span>
+      </div>
+
+      {/* Delete confirm */}
       <AlertDialog open={isDeleteDialogOpen} onOpenChange={(open) => !open && setModalType(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Confirm delete</AlertDialogTitle>
+            <AlertDialogTitle>Delete credential</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete <span className="font-medium text-foreground">{selectedCred?.label}</span>? This action cannot be undone.
+              Delete <span className="font-medium text-foreground">{selectedCred?.label}</span>? This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -619,32 +597,31 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* Add / Edit */}
       <Dialog open={isFormDialogOpen} onOpenChange={(open) => !open && setModalType(null)}>
         <DialogContent className="sm:max-w-lg">
           {modalType === 'add' && addStep === 1 && (
             <>
               <DialogHeader>
-                <DialogTitle>Add credential</DialogTitle>
-                <DialogDescription>
-                  Choose the credential type to store.
-                </DialogDescription>
+                <DialogTitle className="font-mono">new credential</DialogTitle>
+                <DialogDescription>Choose a type to store.</DialogDescription>
               </DialogHeader>
 
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-2 sm:grid-cols-2">
                 {Object.entries(TYPES).map(([k, m]) => (
                   <button
                     key={k}
                     type="button"
                     onClick={() => setAddType(k as CredentialType)}
                     className={cn(
-                      'rounded-xl border p-4 text-left transition-colors hover:bg-muted/60',
-                      addType === k ? 'border-primary bg-primary/5 shadow-sm' : 'border-border/70 bg-background'
+                      'flex items-center gap-3 border p-3 text-left transition-colors hover:bg-muted',
+                      addType === k ? 'border-primary bg-muted' : 'border-border'
                     )}
                   >
-                    <div className={cn('flex h-10 w-10 items-center justify-center rounded-xl text-base', getTypeBadgeStyle(k as CredentialType))}>
+                    <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center text-base', getTypeBadgeStyle(k as CredentialType))}>
                       <i className={`ti ${m.icon}`} aria-hidden="true" />
-                    </div>
-                    <div className="mt-3 text-sm font-medium text-foreground">{m.label}</div>
+                    </span>
+                    <span className="text-xs font-medium">{m.label}</span>
                   </button>
                 ))}
               </div>
@@ -660,66 +637,54 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
             <>
               <DialogHeader>
                 <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setAddStep(1)} title="Back">
+                  <Button variant="ghost" size="icon-sm" onClick={() => setAddStep(1)} title="Back">
                     <i className="ti ti-arrow-left" aria-hidden="true" />
                   </Button>
                   <div>
-                    <DialogTitle>{TYPES[addType].label}</DialogTitle>
-                    <DialogDescription>
-                      Fill in the credential details and optional notes.
-                    </DialogDescription>
+                    <DialogTitle className="font-mono">{TYPES[addType].label}</DialogTitle>
+                    <DialogDescription>Fill in the details.</DialogDescription>
                   </div>
                 </div>
               </DialogHeader>
 
               {formError && (
-                <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                <div className="border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                   {formError}
                 </div>
               )}
 
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">Label</div>
-                  <Input
-                    type="text"
-                    placeholder="e.g. AWS production"
-                    value={formLabel}
-                    onChange={(e) => setFormLabel(e.target.value)}
-                  />
-                </div>
-
-                {addType === 'keypair' && (
-                  <div className="rounded-lg border border-border/70 bg-muted/40 p-3 text-sm leading-6 text-muted-foreground">
-                    Works for AWS, GCP, Twilio, SendGrid, Cloudflare, and any service that provides an access key/client ID and secret key pair.
+              <ScrollArea className="max-h-[55vh]">
+                <div className="space-y-4 pr-3">
+                  <div className="space-y-1.5">
+                    <div className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">Label</div>
+                    <Input
+                      type="text"
+                      placeholder="e.g. AWS production"
+                      value={formLabel}
+                      onChange={(e) => setFormLabel(e.target.value)}
+                      className="font-mono text-sm"
+                    />
                   </div>
-                )}
 
-                {TYPES[addType].fields.map((f) => {
-                  const fm = FIELD_META[f as FieldKey];
-
-                  return (
-                    <div key={f} className="space-y-2">
-                      <div className="text-sm font-medium">{fm.label}</div>
-                      <Input
-                        type={fm.secret ? 'password' : 'text'}
-                        placeholder={fm.label}
-                        value={formFields[f] || ''}
-                        onChange={(e) => setFormFields((prev) => ({ ...prev, [f]: e.target.value }))}
-                      />
+                  {addType === 'keypair' && (
+                    <div className="border border-border bg-muted/40 p-2.5 text-xs leading-5 text-muted-foreground">
+                      Works for AWS, GCP, Twilio, SendGrid, Cloudflare — any service with an access key/client ID and secret pair.
                     </div>
-                  );
-                })}
+                  )}
 
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">Notes</div>
-                  <Textarea
-                    placeholder="Optional notes…"
-                    value={formNotes}
-                    onChange={(e) => setFormNotes(e.target.value)}
-                  />
+                  {renderFormFields(TYPES[addType].fields)}
+
+                  <div className="space-y-1.5">
+                    <div className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">Notes</div>
+                    <Textarea
+                      placeholder="optional notes…"
+                      value={formNotes}
+                      onChange={(e) => setFormNotes(e.target.value)}
+                      className="font-mono text-sm"
+                    />
+                  </div>
                 </div>
-              </div>
+              </ScrollArea>
 
               <DialogFooter>
                 <Button variant="outline" onClick={() => setModalType(null)}>Cancel</Button>
@@ -731,52 +696,40 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
           {modalType === 'edit' && selectedCred && (
             <>
               <DialogHeader>
-                <DialogTitle>Edit credential</DialogTitle>
-                <DialogDescription>
-                  Update the selected credential and save your changes.
-                </DialogDescription>
+                <DialogTitle className="font-mono">edit credential</DialogTitle>
+                <DialogDescription>Update and save your changes.</DialogDescription>
               </DialogHeader>
 
               {formError && (
-                <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                <div className="border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                   {formError}
                 </div>
               )}
 
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">Label</div>
-                  <Input
-                    type="text"
-                    value={formLabel}
-                    onChange={(e) => setFormLabel(e.target.value)}
-                  />
+              <ScrollArea className="max-h-[55vh]">
+                <div className="space-y-4 pr-3">
+                  <div className="space-y-1.5">
+                    <div className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">Label</div>
+                    <Input
+                      type="text"
+                      value={formLabel}
+                      onChange={(e) => setFormLabel(e.target.value)}
+                      className="font-mono text-sm"
+                    />
+                  </div>
+
+                  {renderFormFields(TYPES[selectedCred.type as CredentialType].fields)}
+
+                  <div className="space-y-1.5">
+                    <div className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">Notes</div>
+                    <Textarea
+                      value={formNotes}
+                      onChange={(e) => setFormNotes(e.target.value)}
+                      className="font-mono text-sm"
+                    />
+                  </div>
                 </div>
-
-                {TYPES[selectedCred.type as CredentialType].fields.map((f) => {
-                  const fm = FIELD_META[f as FieldKey];
-
-                  return (
-                    <div key={f} className="space-y-2">
-                      <div className="text-sm font-medium">{fm.label}</div>
-                      <Input
-                        type={fm.secret ? 'password' : 'text'}
-                        placeholder={fm.label}
-                        value={formFields[f] || ''}
-                        onChange={(e) => setFormFields((prev) => ({ ...prev, [f]: e.target.value }))}
-                      />
-                    </div>
-                  );
-                })}
-
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">Notes</div>
-                  <Textarea
-                    value={formNotes}
-                    onChange={(e) => setFormNotes(e.target.value)}
-                  />
-                </div>
-              </div>
+              </ScrollArea>
 
               <DialogFooter>
                 <Button variant="outline" onClick={() => setModalType(null)}>Cancel</Button>
