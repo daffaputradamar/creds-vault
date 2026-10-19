@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -25,11 +25,13 @@ import {
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Textarea } from '@/components/ui/textarea';
+import { Spinner } from '@/components/ui/spinner';
 import {
   createCredential,
   updateCredential,
   deleteCredential,
   lockVault,
+  checkSession,
 } from '@/app/actions';
 import type { Credential } from '@/db/schema';
 import { ModeToggle } from './mode-toggle';
@@ -119,9 +121,13 @@ function formatDate(d: Date | null) {
 
 interface VaultClientProps {
   initialCredentials: Credential[];
+  /** When the server session expires (ms since epoch). */
+  sessionExpiresAt: number;
 }
 
-export default function VaultClient({ initialCredentials }: VaultClientProps) {
+type PendingAction = 'save' | 'delete' | 'lock';
+
+export default function VaultClient({ initialCredentials, sessionExpiresAt }: VaultClientProps) {
   const router = useRouter();
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -133,7 +139,17 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
 
   // UI state
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
-  const [toast, setToast] = useState({ show: false, msg: '' });
+  const [toast, setToast] = useState<{ show: boolean; msg: string; tone: 'success' | 'error' }>({ show: false, msg: '', tone: 'success' });
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // In-flight server action. The ref guards against double clicks that land
+  // before React re-renders the disabled button.
+  const [pending, setPending] = useState<PendingAction | null>(null);
+  const pendingRef = useRef<PendingAction | null>(null);
+
+  // Set once the session is gone: secrets are hidden immediately, then the
+  // page is refreshed so the server renders the lock screen.
+  const [sessionEnded, setSessionEnded] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   // Modal state
@@ -150,14 +166,89 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   // Keyboard shortcuts
   const [showHelp, setShowHelp] = useState(false);
 
-  const handleLock = async () => {
-    await lockVault();
+  const endSession = useCallback((msg: string) => {
+    setSessionEnded(msg);
     router.refresh();
+  }, [router]);
+
+  // Lock the screen when the session expires, and re-check it whenever the tab
+  // comes back (sleep, background tab, back/forward cache, locked elsewhere).
+  useEffect(() => {
+    if (sessionEnded) return;
+
+    const expire = () => endSession('Session expired');
+    const msLeft = sessionExpiresAt - Date.now();
+    if (msLeft <= 0) {
+      expire();
+      return;
+    }
+    const timer = setTimeout(expire, msLeft);
+
+    // focus + visibilitychange usually fire together; one probe is enough.
+    let lastCheck = 0;
+    const verify = async () => {
+      if (Date.now() >= sessionExpiresAt) return expire();
+      if (Date.now() - lastCheck < 5000) return;
+      lastCheck = Date.now();
+      try {
+        const { valid } = await checkSession();
+        if (!valid) endSession('Vault locked');
+      } catch {
+        // Offline or server unreachable: keep the screen until the timer fires.
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') verify(); };
+    const onPageShow = (e: PageTransitionEvent) => { if (e.persisted) verify(); };
+
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', verify);
+    window.addEventListener('pageshow', onPageShow);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', verify);
+      window.removeEventListener('pageshow', onPageShow);
+    };
+  }, [sessionExpiresAt, sessionEnded, endSession]);
+
+  const triggerToast = (msg: string, tone: 'success' | 'error' = 'success') => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ show: true, msg, tone });
+    toastTimer.current = setTimeout(() => setToast((t) => ({ ...t, show: false })), tone === 'error' ? 3500 : 2000);
   };
 
-  const triggerToast = (msg: string) => {
-    setToast({ show: true, msg });
-    setTimeout(() => setToast({ show: false, msg: '' }), 2000);
+  /**
+   * Run a server action with a loading state, ignoring repeat triggers while
+   * one is in flight. Expired sessions lock the screen; thrown errors (e.g.
+   * network failures) become an error toast. Returns null if it didn't run or failed.
+   */
+  const runAction = async <T extends { success: boolean; unauthorized?: boolean }>(
+    kind: PendingAction,
+    action: () => Promise<T>
+  ): Promise<T | null> => {
+    if (pendingRef.current) return null;
+    pendingRef.current = kind;
+    setPending(kind);
+    try {
+      const res = await action();
+      if (!res.success && res.unauthorized) {
+        endSession('Session expired');
+        return null;
+      }
+      return res;
+    } catch (err) {
+      console.error(err);
+      triggerToast('Something went wrong. Check your connection and try again.', 'error');
+      return null;
+    } finally {
+      pendingRef.current = null;
+      setPending(null);
+    }
+  };
+
+  const handleLock = async () => {
+    const res = await runAction('lock', lockVault);
+    if (res?.success) endSession('Vault locked');
   };
 
   const copySshFromCred = async (c: Credential) => {
@@ -203,6 +294,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   };
 
   const openAddModal = () => {
+    if (pendingRef.current) return;
     setModalType('add');
     setAddStep(1);
     setAddType('ssh');
@@ -213,6 +305,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
   };
 
   const openEditModal = (c: Credential) => {
+    if (pendingRef.current) return;
     setModalType('edit');
     setFormLabel(c.label);
     setFormNotes(c.notes || '');
@@ -229,15 +322,17 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
 
   const handleDelete = async () => {
     if (selectedId === null) return;
-    const res = await deleteCredential(selectedId);
+    const id = selectedId;
+    const res = await runAction('delete', () => deleteCredential(id));
+    if (!res) return;
     if (res.success) {
-      const remaining = creds.filter(c => c.id !== selectedId);
+      const remaining = creds.filter(c => c.id !== id);
       setCreds(remaining);
       setSelectedId(remaining.length > 0 ? remaining[0].id : null);
       setModalType(null);
       triggerToast('Credential deleted');
     } else {
-      triggerToast(res.error || 'Failed to delete');
+      triggerToast(res.error || 'Failed to delete', 'error');
     }
   };
 
@@ -253,8 +348,10 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     };
     meta.fields.forEach((f) => { payload[f] = formFields[f]?.trim() || ''; });
 
-    const res = await createCredential(payload);
-    if (res.success && res.id) {
+    setFormError('');
+    const res = await runAction('save', () => createCredential(payload));
+    if (!res) return;
+    if (res.success) {
       const newCred: Credential = { ...payload, id: res.id, createdAt: new Date() };
       const updatedCreds = [...creds, newCred].sort((a, b) => a.label.localeCompare(b.label));
       setCreds(updatedCreds);
@@ -281,9 +378,12 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
     };
     meta.fields.forEach((f) => { payload[f] = formFields[f]?.trim() || ''; });
 
-    const res = await updateCredential(selectedId, payload);
+    const id = selectedId;
+    setFormError('');
+    const res = await runAction('save', () => updateCredential(id, payload));
+    if (!res) return;
     if (res.success) {
-      const updated = creds.map(x => x.id === selectedId ? { ...x, ...payload } : x);
+      const updated = creds.map(x => x.id === id ? { ...x, ...payload } : x);
       setCreds(updated);
       setModalType(null);
       setRevealed({});
@@ -343,7 +443,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
       }
 
       // Everything below is for when no field / dialog owns the keyboard.
-      if (typing || modalType || showHelp) return;
+      if (typing || modalType || showHelp || pendingRef.current) return;
 
       switch (e.key) {
         case 'j':
@@ -425,6 +525,28 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
       );
     });
 
+  if (sessionEnded) {
+    return (
+      <div className="flex h-dvh flex-col items-center justify-center gap-4 bg-background p-8 text-center font-mono text-foreground">
+        <div className="flex h-14 w-14 items-center justify-center border border-border text-2xl text-muted-foreground">
+          <i className="ti ti-lock" aria-hidden="true" />
+        </div>
+        <div>
+          <div className="text-sm font-medium">{sessionEnded}</div>
+          <p className="mt-1 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+            <Spinner className="size-3.5" /> returning to the lock screen…
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
+          Reload now
+        </Button>
+      </div>
+    );
+  }
+
+  const isSaving = pending === 'save';
+  const isDeleting = pending === 'delete';
+
   return (
     <div className="flex h-dvh flex-col bg-background font-mono text-foreground">
       {/* ── Top command bar ─────────────────────────────────────────── */}
@@ -457,7 +579,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
         </div>
 
         <div className="ml-auto flex items-center gap-1.5">
-          <Button size="sm" className="gap-1.5" onClick={openAddModal}>
+          <Button size="sm" className="gap-1.5" onClick={openAddModal} disabled={pending !== null}>
             <i className="ti ti-plus" aria-hidden="true" />
             <span className="hidden sm:inline">New</span>
           </Button>
@@ -471,8 +593,8 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
           >
             <i className="ti ti-keyboard" aria-hidden="true" />
           </Button>
-          <Button variant="outline" size="icon" onClick={handleLock} title="Lock vault">
-            <i className="ti ti-lock" aria-hidden="true" />
+          <Button variant="outline" size="icon" onClick={handleLock} disabled={pending !== null} title="Lock vault">
+            {pending === 'lock' ? <Spinner /> : <i className="ti ti-lock" aria-hidden="true" />}
           </Button>
           <ModeToggle />
         </div>
@@ -581,10 +703,10 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
                       <i className="ti ti-terminal-2" aria-hidden="true" />
                     </Button>
                   )}
-                  <Button variant="outline" size="icon" onClick={() => openEditModal(selectedCred)} title="Edit">
+                  <Button variant="outline" size="icon" onClick={() => openEditModal(selectedCred)} disabled={pending !== null} title="Edit">
                     <i className="ti ti-edit" aria-hidden="true" />
                   </Button>
-                  <Button variant="destructive" size="icon" onClick={() => setModalType('delete')} title="Delete">
+                  <Button variant="destructive" size="icon" onClick={() => setModalType('delete')} disabled={pending !== null} title="Delete">
                     <i className="ti ti-trash" aria-hidden="true" />
                   </Button>
                 </div>
@@ -690,8 +812,12 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
           'pointer-events-none fixed bottom-4 right-4 z-50 flex items-center gap-2 border border-border bg-popover px-3 py-2 text-sm shadow-lg transition-all duration-200',
           toast.show ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'
         )}
+        role="status"
+        aria-live="polite"
       >
-        <i className="ti ti-check text-primary" aria-hidden="true" />
+        {toast.tone === 'error'
+          ? <i className="ti ti-alert-circle text-destructive" aria-hidden="true" />
+          : <i className="ti ti-check text-primary" aria-hidden="true" />}
         <span>{toast.msg}</span>
       </div>
 
@@ -719,7 +845,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
       </Dialog>
 
       {/* Delete confirm */}
-      <AlertDialog open={isDeleteDialogOpen} onOpenChange={(open) => !open && setModalType(null)}>
+      <AlertDialog open={isDeleteDialogOpen} onOpenChange={(open) => !open && !isDeleting && setModalType(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete credential</AlertDialogTitle>
@@ -728,14 +854,17 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete}>Delete</AlertDialogAction>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} disabled={isDeleting}>
+              {isDeleting && <Spinner />}
+              {isDeleting ? 'Deleting…' : 'Delete'}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       {/* Add / Edit */}
-      <Dialog open={isFormDialogOpen} onOpenChange={(open) => !open && setModalType(null)}>
+      <Dialog open={isFormDialogOpen} onOpenChange={(open) => !open && !isSaving && setModalType(null)}>
         <DialogContent className="sm:max-w-lg">
           {modalType === 'add' && addStep === 1 && (
             <>
@@ -774,7 +903,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
             <>
               <DialogHeader>
                 <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="icon-sm" onClick={() => setAddStep(1)} title="Back">
+                  <Button variant="ghost" size="icon-sm" onClick={() => setAddStep(1)} disabled={isSaving} title="Back">
                     <i className="ti ti-arrow-left" aria-hidden="true" />
                   </Button>
                   <div>
@@ -791,7 +920,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
               )}
 
               <ScrollArea className="max-h-[55vh]">
-                <div className="space-y-4 pr-3">
+                <fieldset disabled={isSaving} className="min-w-0 space-y-4 pr-3 disabled:opacity-60">
                   <div className="space-y-1.5">
                     <div className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">Label</div>
                     <Input
@@ -820,12 +949,15 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
                       className="font-mono text-sm"
                     />
                   </div>
-                </div>
+                </fieldset>
               </ScrollArea>
 
               <DialogFooter>
-                <Button variant="outline" onClick={() => setModalType(null)}>Cancel</Button>
-                <Button onClick={saveNew}>Save</Button>
+                <Button variant="outline" onClick={() => setModalType(null)} disabled={isSaving}>Cancel</Button>
+                <Button onClick={saveNew} disabled={isSaving}>
+                  {isSaving && <Spinner />}
+                  {isSaving ? 'Saving…' : 'Save'}
+                </Button>
               </DialogFooter>
             </>
           )}
@@ -844,7 +976,7 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
               )}
 
               <ScrollArea className="max-h-[55vh]">
-                <div className="space-y-4 pr-3">
+                <fieldset disabled={isSaving} className="min-w-0 space-y-4 pr-3 disabled:opacity-60">
                   <div className="space-y-1.5">
                     <div className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">Label</div>
                     <Input
@@ -865,12 +997,15 @@ export default function VaultClient({ initialCredentials }: VaultClientProps) {
                       className="font-mono text-sm"
                     />
                   </div>
-                </div>
+                </fieldset>
               </ScrollArea>
 
               <DialogFooter>
-                <Button variant="outline" onClick={() => setModalType(null)}>Cancel</Button>
-                <Button onClick={saveEdit}>Save changes</Button>
+                <Button variant="outline" onClick={() => setModalType(null)} disabled={isSaving}>Cancel</Button>
+                <Button onClick={saveEdit} disabled={isSaving}>
+                  {isSaving && <Spinner />}
+                  {isSaving ? 'Saving…' : 'Save changes'}
+                </Button>
               </DialogFooter>
             </>
           )}

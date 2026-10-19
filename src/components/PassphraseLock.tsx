@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
+import { Spinner } from '@/components/ui/spinner';
 
 interface PassphraseLockProps {
   onUnlock: () => void;
@@ -26,7 +27,7 @@ export default function PassphraseLock({ onUnlock }: PassphraseLockProps) {
 
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!passphrase.trim()) return;
+    if (loading || !passphrase.trim()) return;
 
     setLoading(true);
     setError('');
@@ -34,16 +35,16 @@ export default function PassphraseLock({ onUnlock }: PassphraseLockProps) {
     try {
       const res = await unlockVault(passphrase);
       if (res.success) {
+        // Stay in the loading state until the vault replaces this screen.
         onUnlock();
-      } else {
-        setError(res.error || 'Incorrect passphrase');
+        return;
       }
+      setError(res.error || 'Incorrect passphrase');
     } catch (err) {
       setError('An error occurred. Please try again.');
       console.error(err);
-    } finally {
-      setLoading(false);
     }
+    setLoading(false);
   };
 
   return (
@@ -82,7 +83,8 @@ export default function PassphraseLock({ onUnlock }: PassphraseLockProps) {
             </div>
 
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? 'Decrypting...' : 'Unlock Vault'}
+              {loading && <Spinner />}
+              {loading ? 'Unlocking...' : 'Unlock Vault'}
             </Button>
           </form>
 
